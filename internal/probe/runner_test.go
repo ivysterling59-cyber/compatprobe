@@ -46,6 +46,67 @@ func TestNormalStreaming(t *testing.T) {
 	}
 }
 
+func TestProgressMatchesObservedResultsOnEveryRunPath(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		config      testserver.Config
+		cancelProbe string
+	}{
+		{name: "normal", config: testserver.Config{TTFBDelay: 20 * time.Millisecond}},
+		{name: "warning", config: testserver.Config{Mode: testserver.MissingDone}},
+		{name: "HTTP failure", config: testserver.Config{BasicStatus: http.StatusUnauthorized}},
+		{name: "models cancellation", cancelProbe: "authentication_models"},
+		{name: "basic cancellation", cancelProbe: "basic_chat_completion"},
+		{name: "stream cancellation", cancelProbe: "stream_completion"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := httptest.NewServer(testserver.Handler(tc.config))
+			defer s.Close()
+			target := config.Target{BaseURL: s.URL, Model: "m", Timeout: time.Second}
+			if err := target.Normalize(); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var events []Progress
+			runner := New(target)
+			runner.OnProgress = func(event Progress) {
+				events = append(events, event)
+				if event.Status == "" && event.Name == tc.cancelProbe {
+					cancel()
+				}
+			}
+			result := runner.Run(ctx)
+			var completed []Progress
+			started := make(map[string]bool)
+			for _, event := range events {
+				if event.Status == "" {
+					if started[event.Name] {
+						t.Fatalf("duplicate start: %#v", events)
+					}
+					started[event.Name] = true
+				} else {
+					completed = append(completed, event)
+				}
+			}
+			if len(completed) != len(result.Probes) {
+				t.Fatalf("incomplete final progress: %#v", events)
+			}
+			for i, p := range result.Probes {
+				if got := completed[i]; got.Name != p.Name || got.Status != p.Status || got.Duration != p.Duration {
+					t.Fatalf("progress differs from observed result: %#v versus %#v", got, p)
+				}
+				if p.Status == core.Skip && started[p.Name] {
+					t.Fatalf("skipped probe was announced as started: %#v", events)
+				}
+			}
+			if tc.name == "normal" && find(result.Probes, "stream_completion").Duration < 15*time.Millisecond {
+				t.Fatal("progress duration did not include observed response latency")
+			}
+		})
+	}
+}
+
 func TestSlowStreamRecordsDelays(t *testing.T) {
 	s := httptest.NewServer(testserver.Handler(testserver.Config{Mode: testserver.Normal, TTFBDelay: 20 * time.Millisecond, ChunkInterval: 5 * time.Millisecond}))
 	defer s.Close()

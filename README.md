@@ -74,7 +74,11 @@ compatprobe check --base-url https://example.com/v1 --model example-model --json
 compatprobe check --base-url https://example.com/v1 --model example-model --output compatprobe-report.md
 ```
 
-Use `--timeout 90s` to set the overall check deadline, `--verbose`, or comma-separated custom headers with `--header 'Name:Value,X-Other:Value'` when needed. Press Ctrl+C to cancel active requests. Run `compatprobe help` for the command summary.
+Use `--timeout 90s` to set the overall check deadline, or comma-separated custom headers with `--header 'Name:Value,X-Other:Value'` when needed. Press Ctrl+C to cancel active requests. Run `compatprobe help` for the command summary or `compatprobe check --help` (also `-h`) for all check options and defaults.
+
+Add `--verbose` to see probe starts, final statuses, actual probe durations, and total elapsed time on stderr. Progress appears at probe transitions, not on a periodic timer; the last `START` line identifies the active request while waiting. Skipped probes are reported as `SKIP` without a start or fabricated duration. Progress contains no request headers or bodies and does not interfere with `--json` on stdout.
+
+The terminal streaming summary includes HTTP status, Content-Type, observed duration and SSE event/frame counts, completion markers, clean EOF, and any transport error. Missing facts are shown as `not observed`; observed `false` or zero values remain explicit. An observed empty transport error is shown as `none`.
 
 ## What It Tests
 

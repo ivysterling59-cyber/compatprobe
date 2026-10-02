@@ -152,16 +152,31 @@ func Markdown(r Report) []byte {
 }
 
 func markdownFact(b *strings.Builder, label string, probe *core.ProbeResult, key, unit string) {
+	if value, ok := observedFact(probe, key); ok {
+		fmt.Fprintf(b, "- %s: `%v%s`\n", label, value, unit)
+		return
+	}
+	fmt.Fprintf(b, "- %s: not observed\n", label)
+}
+
+func observedFact(probe *core.ProbeResult, key string) (any, bool) {
 	if probe != nil {
 		if value, ok := probe.Facts[key]; ok && value != nil {
 			if text, ok := value.(string); ok && text == "" {
 				value = "none"
 			}
-			fmt.Fprintf(b, "- %s: `%v%s`\n", label, value, unit)
-			return
+			return value, true
 		}
 	}
-	fmt.Fprintf(b, "- %s: not observed\n", label)
+	return nil, false
+}
+
+func terminalFact(b *strings.Builder, label string, probe *core.ProbeResult, key, unit string) {
+	if value, ok := observedFact(probe, key); ok {
+		fmt.Fprintf(b, "%s: %v%s\n", label, value, unit)
+		return
+	}
+	fmt.Fprintf(b, "%s: not observed\n", label)
 }
 
 func reproductionArg(value, shell string) string {
@@ -174,7 +189,11 @@ func reproductionArg(value, shell string) string {
 func Terminal(r Report) []byte {
 	var b strings.Builder
 	b.WriteString("CompatProbe\n\nTarget\n----------------------------------\n")
-	fmt.Fprintf(&b, "Endpoint  %s\nModel     %s\n\nProbes\n----------------------------------\n", r.Target.BaseURL, r.Target.Model)
+	fmt.Fprintf(&b, "Endpoint  %s\nModel     %s\n", r.Target.BaseURL, r.Target.Model)
+	if r.CheckTimeout > 0 {
+		fmt.Fprintf(&b, "Overall check timeout: %s (shared by all probes)\n", r.CheckTimeout)
+	}
+	b.WriteString("\nProbes\n----------------------------------\n")
 	for _, p := range r.Probes {
 		fmt.Fprintf(&b, "%-32s %-5s %s\n", p.Name, p.Status, formatDuration(p.Duration))
 		if p.Error != nil {
@@ -185,17 +204,17 @@ func Terminal(r Report) []byte {
 		framing := probeByName(r.Probes, "sse_framing")
 		finish := probeByName(r.Probes, "finish_semantics")
 		b.WriteString("\nStreaming\n----------------------------------\n")
-		fmt.Fprintf(&b, "Requested max_completion_tokens budget %v\n", stream.Facts["requested_max_completion_tokens"])
-		fmt.Fprintf(&b, "Observed duration      %v ms\n", stream.Facts["stream_duration_ms"])
-		fmt.Fprintf(&b, "Content-Type          %v\n", stream.Facts["content_type"])
-		if framing != nil {
-			fmt.Fprintf(&b, "Valid SSE frames      %v\n", framing.Facts["valid_sse_frames"])
-			fmt.Fprintf(&b, "Invalid SSE frames    %v\n", framing.Facts["invalid_sse_frames"])
-		}
-		if finish != nil {
-			fmt.Fprintf(&b, "finish_reason seen    %v\n", finish.Facts["finish_reason_seen"])
-			fmt.Fprintf(&b, "[DONE] seen           %v\n", finish.Facts["done_seen"])
-		}
+		terminalFact(&b, "Requested max_completion_tokens budget", stream, "requested_max_completion_tokens", "")
+		terminalFact(&b, "HTTP status", stream, "http_status", "")
+		terminalFact(&b, "Content-Type", stream, "content_type", "")
+		terminalFact(&b, "Observed duration", stream, "stream_duration_ms", " ms")
+		terminalFact(&b, "Observed SSE events/chunks", stream, "chunks", "")
+		terminalFact(&b, "Valid SSE frames", framing, "valid_sse_frames", "")
+		terminalFact(&b, "Invalid SSE frames", framing, "invalid_sse_frames", "")
+		terminalFact(&b, "finish_reason seen", finish, "finish_reason_seen", "")
+		terminalFact(&b, "[DONE] seen", finish, "done_seen", "")
+		terminalFact(&b, "Clean EOF", stream, "clean_eof", "")
+		terminalFact(&b, "Transport error", stream, "transport_error", "")
 	}
 	b.WriteString("\nDiagnosis\n----------------------------------\n")
 	if len(r.Diagnoses) == 0 {

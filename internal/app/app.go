@@ -61,13 +61,19 @@ func (a App) check(args []string) int {
 	fs.StringVar(&target.BaseURL, "base-url", "", "OpenAI-compatible base URL")
 	fs.StringVar(&target.APIKey, "api-key", "", "API key (prefer COMPATPROBE_API_KEY)")
 	fs.StringVar(&target.Model, "model", "", "model name")
-	fs.DurationVar(&target.Timeout, "timeout", 60*time.Second, "overall request timeout")
+	fs.DurationVar(&target.Timeout, "timeout", 60*time.Second, "overall check timeout shared by all probes")
 	fs.IntVar(&target.StreamTokens, "stream-tokens", config.DefaultStreamTokens, fmt.Sprintf("Chat Completions max_completion_tokens budget (%d-%d; not a visible-token count or duration)", config.MinStreamTokens, config.MaxStreamTokens))
 	fs.BoolVar(&jsonOut, "json", false, "write JSON to stdout")
 	fs.StringVar(&output, "output", "", "write Markdown report to file")
 	fs.BoolVar(&verbose, "verbose", false, "include verbose progress on stderr")
 	fs.StringVar(&headers, "header", "", "custom headers as comma-separated Name:Value pairs")
 	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			fmt.Fprintln(a.Stdout, "Usage: compatprobe check --base-url URL --model MODEL [options]\n\nOptions:")
+			fs.SetOutput(a.Stdout)
+			fs.PrintDefaults()
+			return 0
+		}
 		fmt.Fprintf(a.Stderr, "error: %s\n", redact.Secrets(err.Error(), target.APIKey))
 		return 2
 	}
@@ -87,16 +93,28 @@ func (a App) check(args []string) int {
 		fmt.Fprintf(a.Stderr, "error: %s\n", err)
 		return 2
 	}
-	if verbose {
-		fmt.Fprintln(a.Stderr, "Running compatibility probes...")
-	}
 	parent := a.Context
 	if parent == nil {
 		parent = context.Background()
 	}
 	ctx, stop := signal.NotifyContext(parent, os.Interrupt)
 	defer stop()
-	run := probe.New(target).Run(ctx)
+	runner := probe.New(target)
+	if verbose {
+		started := time.Now()
+		fmt.Fprintf(a.Stderr, "Running compatibility probes (overall timeout=%s, shared by all probes)...\n", target.Timeout)
+		runner.OnProgress = func(event probe.Progress) {
+			elapsed := time.Since(started).Round(time.Millisecond)
+			if event.Status == "" {
+				fmt.Fprintf(a.Stderr, "%s START elapsed=%s\n", event.Name, elapsed)
+			} else if event.Status == core.Skip {
+				fmt.Fprintf(a.Stderr, "%s SKIP elapsed=%s\n", event.Name, elapsed)
+			} else {
+				fmt.Fprintf(a.Stderr, "%s %s duration=%s elapsed=%s\n", event.Name, event.Status, event.Duration.Round(time.Millisecond), elapsed)
+			}
+		}
+	}
+	run := runner.Run(ctx)
 	diags := diagnosis.Evaluate(run.Probes)
 	secrets := []string{target.APIKey}
 	for name, values := range target.Headers {
@@ -167,5 +185,5 @@ func exitCode(ps []core.ProbeResult) int {
 	return 0
 }
 func (a App) help() {
-	fmt.Fprintf(a.Stdout, "CompatProbe\n\nUsage:\n  compatprobe check --base-url URL --model MODEL [options]\n  compatprobe version\n  compatprobe help\n\n--stream-tokens N maps to Chat Completions max_completion_tokens, a completion-token budget (%d-%d, default %d); it does not guarantee a visible-token count or stream duration.\nAPI keys may be supplied with COMPATPROBE_API_KEY (recommended).\n", config.MinStreamTokens, config.MaxStreamTokens, config.DefaultStreamTokens)
+	fmt.Fprintf(a.Stdout, "CompatProbe\n\nUsage:\n  compatprobe check --base-url URL --model MODEL [options]\n  compatprobe version\n  compatprobe help\n\nRun compatprobe check --help for all check options.\n--stream-tokens N maps to Chat Completions max_completion_tokens, a completion-token budget (%d-%d, default %d); it does not guarantee a visible-token count or stream duration.\nAPI keys may be supplied with COMPATPROBE_API_KEY (recommended).\n", config.MinStreamTokens, config.MaxStreamTokens, config.DefaultStreamTokens)
 }

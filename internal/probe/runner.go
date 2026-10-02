@@ -31,6 +31,17 @@ type RunResult struct {
 type Runner struct {
 	Target config.Target
 	Client *transport.Client
+	// OnProgress is called synchronously at probe transitions. It must not block.
+	OnProgress func(Progress)
+}
+
+// Progress contains only probe identity, status, and observed timing, never
+// request headers, bodies, target credentials, or upstream error messages.
+// An empty Status marks the start of a network probe; otherwise it is final.
+type Progress struct {
+	Name     string
+	Status   core.Status
+	Duration time.Duration
 }
 
 func New(target config.Target) *Runner {
@@ -44,22 +55,45 @@ func (r *Runner) Run(ctx context.Context) RunResult {
 		ctx, cancel = context.WithTimeout(ctx, r.Target.Timeout)
 		defer cancel()
 	}
+	r.started("authentication_models")
 	models, mt := r.models(ctx)
+	r.completed(models)
 	if ctx.Err() != nil || (models.Error != nil && IsNetworkKind(models.Error.Kind)) {
-		return earlyRun(models, mt)
+		run := earlyRun(models, mt)
+		r.completed(run.Probes[1:]...)
+		return run
 	}
+	r.started("basic_chat_completion")
 	basic, bt := r.basic(ctx)
+	r.completed(basic)
 	if ctx.Err() != nil {
 		stream, framing, finish := skippedStream(ctx.Err())
+		r.completed(stream, framing, finish)
 		mt = placeTimeline(mt, 0, "authentication_models")
 		bt = placeTimeline(bt, models.Duration, "basic_chat_completion")
 		return RunResult{Probes: []core.ProbeResult{models, basic, stream, framing, finish}, Timeline: append(mt, bt...)}
 	}
+	r.started("stream_completion")
 	stream, framing, finish, st := r.stream(ctx)
+	r.completed(stream, framing, finish)
 	mt = placeTimeline(mt, 0, "authentication_models")
 	bt = placeTimeline(bt, models.Duration, "basic_chat_completion")
 	st = placeTimeline(st, models.Duration+basic.Duration, "stream_completion")
 	return RunResult{Probes: []core.ProbeResult{models, basic, stream, framing, finish}, Timeline: append(append(mt, bt...), st...)}
+}
+
+func (r *Runner) started(name string) {
+	if r.OnProgress != nil {
+		r.OnProgress(Progress{Name: name})
+	}
+}
+
+func (r *Runner) completed(probes ...core.ProbeResult) {
+	if r.OnProgress != nil {
+		for _, p := range probes {
+			r.OnProgress(Progress{Name: p.Name, Status: p.Status, Duration: p.Duration})
+		}
+	}
 }
 
 func earlyRun(models core.ProbeResult, timeline []core.TimelineEvent) RunResult {
