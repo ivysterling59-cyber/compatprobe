@@ -1,0 +1,7 @@
+/compatprobe
+/compatprobe.exe
+/dist/
+*.test
+*.out
+/report.md
+/report.json

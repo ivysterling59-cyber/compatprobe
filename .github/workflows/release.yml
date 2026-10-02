@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Validate
+        run: |
+          go test ./...
+          go vet ./...
+          go test -race ./...
+      - name: Build release artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir dist
+          for target in windows/amd64 windows/arm64 linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            os=${target%/*}
+            arch=${target#*/}
+            name="compatprobe-${os}-${arch}"
+            if [ "$os" = windows ]; then name="${name}.exe"; fi
+            GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build -trimpath \
+              -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
+              -o "dist/${name}" ./cmd/compatprobe
+          done
+          cd dist
+          sha256sum * > SHA256SUMS
+      - uses: softprops/action-gh-release@v3
+        with:
+          body_path: RELEASE_NOTES.md
+          files: dist/*
+          fail_on_unmatched_files: true
